@@ -18,7 +18,7 @@ return function(self, timing)
 	timing.hitbox = Vector3.new(20, 20, 20)
 
 	local action = Action.new()
-	action._when = 0
+	action._when = 500
 	action._type = "Dodge"
 	action.hitbox = Vector3.new(20, 20, 20)
 	action.name = "Dynamic Big Bell Timing"

@@ -218,6 +218,12 @@ function VisualsTab.initVisualAssistanceSection(groupbox)
 		{ sdoToggle, true },
 	})
 
+	buildAssistanceDepBox:AddToggle("AutoFavourCards", {
+		Text = "Auto Favour Cards",
+		Tooltip = "Automatically favour cards in the build when builder assistance is active. Unfavours them when disabled.",
+		Default = false,
+	})
+
 	buildAssistanceDepBox:AddInput("BuildAssistanceLink", {
 		Text = "Build Assistance Link",
 		Tooltip = "The builder link that will be used to assist with builds.",

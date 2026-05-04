@@ -94,6 +94,11 @@ local groups = {}
 -- Original stores.
 local fieldOfView = nil
 
+-- Auto favour state.
+local autoFavourApplied = false
+local autoFavourBdata = nil
+local lastFavouredNames = {}
+
 -- Mystery reveal state.
 local roll2Notified = false
 local roll2Dismissals = {}
@@ -296,8 +301,38 @@ local onPlayerGuiDescendantRemoving = LPH_NO_VIRTUALIZE(function(descendant)
 	roll2Notified = false
 end)
 
+local stripTags = nil
+local correctBuilderName = nil
+local mantraDisplayToInternal = nil
+
 ---Update card frames.
 local updateCardFrames = LPH_NO_VIRTUALIZE(function()
+	local drinfo = Visuals.drinfo
+	if not drinfo then
+		return
+	end
+
+	---@type BuilderData
+	local bdata = Visuals.bdata
+	if not bdata then
+		return
+	end
+
+	-- Pre-build lookup sets from builder data for O(1) matching.
+	local talentLookup = {}
+	for _, talent in next, bdata.talents do
+		local talentClean = stripTags(talent)
+		talentLookup[talentClean] = talent
+		talentLookup[talent] = talent
+	end
+
+	local mantraLookup = {}
+	for _, mantra in next, bdata.mantras do
+		local mantraClean = correctBuilderName(stripTags(mantra))
+		mantraLookup[mantraClean] = mantra
+		mantraLookup[mantra] = mantra
+	end
+
 	for frame in next, cardFrames do
 		local title = frame:FindFirstChild("Title")
 		if not title then
@@ -309,26 +344,17 @@ local updateCardFrames = LPH_NO_VIRTUALIZE(function()
 			continue
 		end
 
-		local drinfo = Visuals.drinfo
-		if not drinfo then
-			continue
-		end
-
-		---@type BuilderData
-		local bdata = Visuals.bdata
-		if not bdata then
-			continue
-		end
-
 		local trimmedName = string.gsub(title.Text, "^%s*(.-)%s*$", "%1")
-		local cardInData = table.find(bdata.talents, trimmedName) or table.find(bdata.mantras, trimmedName)
+		local fullTalentName = talentLookup[trimmedName] or mantraLookup[trimmedName]
+		local cardInData = fullTalentName ~= nil
 
 		buildAssistanceMap:add(border, "ImageColor3", cardInData and Color3.new(0, 255, 0) or Color3.new(255, 0, 0))
 
 		if
 			cardInData
-			and bdata.ddata:possible(trimmedName, bdata.pre)
-			and not bdata.ddata:possible(trimmedName, bdata.post)
+			and fullTalentName
+			and bdata.ddata:possible(fullTalentName, bdata.pre)
+			and not bdata.ddata:possible(fullTalentName, bdata.post)
 		then
 			buildAssistanceMap:add(border, "ImageColor3", Color3.new(255, 0, 255))
 		end
@@ -554,8 +580,191 @@ local updateTraits = LPH_NO_VIRTUALIZE(function(jframe)
 end)
 
 ---Strip weapon tags like [HVY], [LHT], [MED], [FTD], [BLD] for display.
-local function stripTags(str)
+stripTags = function(str)
 	return str:gsub("%s*%[.-%]$", "")
+end
+
+-- Builder name corrections (builder data name -> in-game name).
+local builderNameCorrections = {
+	["Shadow Meteors"] = "Shadow Meteor",
+}
+
+-- Mantra display name -> internal name mapping.
+mantraDisplayToInternal = {
+	["Tornado Kick"] = "HeavyKick:Wind",
+	["Ice Forge"] = "Forge:Ice",
+	["Fire Forge"] = "Forge:Fire",
+	["Storm Blades"] = "Forge:Lightning",
+	["Wind Forge"] = "Forge:Wind",
+	["Iron Tether"] = "Forge:Metal",
+	["Blood Orb"] = "Forge:Blood",
+	["Flaming Scourge"] = "Whip:Fire",
+	["Ice Cubes"] = "Push:Ice",
+	["Bloodtide Ritual"] = "Judgement:Blood",
+	["Relentless Flames"] = "RapidArms:Fire",
+	["Reinforce"] = "Reinforce:Fortitude",
+	["Iceberg"] = "Reinforce:Ice",
+	["Iron Skin"] = "Reinforce:Metal",
+	["Shade Devour"] = "Devour:Shadow",
+	["Devouring Eye"] = "SilenceField:Shadow",
+	["Warden's Blades"] = "Dice:Ice",
+	["Taunt"] = "Taunt:Charisma",
+	["Glare"] = "Glare:Willpower",
+	["Sing"] = "Sing:Charisma",
+	["Strong Left"] = "StrongPunch:Strength",
+	["Ash Slam"] = "StrongPunch:Fire",
+	["Master's Flourish"] = "StrongPunch:WeaponMedium",
+	["Pressure Blast"] = "StrongPunch:WeaponHeavy",
+	["Eclipse Kick"] = "StrongPunch:Shadow",
+	["Rocket Lance"] = "StrongPunch:Metal",
+	["Veinbreaker"] = "StrongPunch:Blood",
+	["Adrenaline Surge"] = "Adrenaline:Agility",
+	["Dash"] = "Dash:Agility",
+	["Metal Fakeout"] = "Dash:Metal",
+	["Rapid Slashes"] = "Dash:WeaponLight",
+	["Slice 'n' Dice"] = "Dash:WeaponMedium",
+	["Revenge"] = "Revenge:Agility",
+	["Punishment"] = "Revenge:WeaponHeavy",
+	["Twincleave"] = "Revenge:WeaponMedium",
+	["Permafrost Prison"] = "Zone:Shadow",
+	["Ether Barrage"] = "Barrage:Intelligence",
+	["Metal Gatling"] = "Barrage:Metal",
+	["Rapid Punches"] = "Barrage:Strength",
+	["Encircle"] = "Encircle:Shadow",
+	["Shadow Vortex"] = "Attract:Shadow",
+	["Emotion Wave"] = "Wave:Lightning",
+	["Champion's Whirlthrow"] = "Toss:Wind",
+	["Grand Javelin"] = "Toss:Lightning",
+	["Needle Barrage"] = "Toss:Metal",
+	["Flame Ballista"] = "Toss:Fire",
+	["Ice Flock"] = "Toss:Ice",
+	["Table Flip"] = "Toss:Strength",
+	["Sanguine Dive"] = "Toss:Blood",
+	["Thunder Kick"] = "Kick:Lightning",
+	["Metal Kick"] = "Kick:Metal",
+	["Flashfire Sweep"] = "Kick:Fire",
+	["Twister Kicks"] = "Kick:Wind",
+	["Crucifixion"] = "Conjure:Blood",
+	["Bolt Piercer"] = "SkyArrow:Lightning",
+	["Metal Rain"] = "SkyArrow:Metal",
+	["Flame Sentinel"] = "SkyArrow:Fire",
+	["Ice Skate"] = "Skate:Ice",
+	["Gaze"] = "Gaze:Willpower",
+	["Ice Fissure"] = "Fissure:Ice",
+	["Ice Smash"] = "Smash:Ice",
+	["Iron Slam"] = "Smash:Metal",
+	["Shadow Meteor"] = "Palm:Shadow",
+	["Gale Punch"] = "Palm:Wind",
+	["Fire Palm"] = "Palm:Fire",
+	["Lightning Impact"] = "Palm:Lightning",
+	["Iron Quills"] = "Palm:Metal",
+	["Flame Blind"] = "Blind:Fire",
+	["Ice Spikes"] = "Pillar:Ice",
+	["Metal Rampart"] = "Pillar:Metal",
+	["Flame Leap"] = "Leap:Fire",
+	["Strong Leap"] = "Leap:Strength",
+	["Neural Pathway"] = "Leap:Intelligence",
+	["Spark Swap"] = "Swap:Lightning",
+	["Crimson Surge"] = "UpSmash:Blood",
+	["Flashdraw Strike"] = "UpSmash:WeaponMedium",
+	["Shade Step"] = "UpSmash:Shadow",
+	["Updraft"] = "UpSmash:Wind",
+	["Ice Chain"] = "Restraint:Ice",
+	["Shadow Chains"] = "Restraint:Shadow",
+	["Bloodcurdle"] = "Restraint:Blood",
+	["Wind Carve"] = "Carve:Wind",
+	["Electro Carve"] = "Carve:Lightning",
+	["Ice Carve"] = "Carve:Ice",
+	["Ice Daggers"] = "Dagger:Ice",
+	["Shadow Seekers"] = "Dagger:Shadow",
+	["Fleeting Sparks"] = "Dagger:Lightning",
+	["Crimson Rain"] = "Dagger:Blood",
+	["Vicious Descent"] = "DownAir:Blood",
+	["Tempest Blitz"] = "DownAir:Lightning",
+	["Prediction"] = "Prediction:Intelligence",
+	["Heavenly Wind"] = "HeavenlyStrike:Wind",
+	["Gale Lunge"] = "Pierce:Wind",
+	["Metal Ball"] = "Pierce:Metal",
+	["Ice Lance"] = "Pierce:Ice",
+	["Blood Stakes"] = "Pierce:Blood",
+	["Lightning Stream"] = "Stream:Lightning",
+	["Chain Pull"] = "Stream:Metal",
+	["Lightning Clones"] = "Clones:Lightning",
+	["Shadow Assault"] = "Strike:Shadow",
+	["Flame Assault"] = "Strike:Fire",
+	["Shoulder Bash"] = "Strike:Fortitude",
+	["Prominence Draw"] = "Strike:WeaponMedium",
+	["Lightning Assault"] = "Strike:Lightning",
+	["Oxidizing Rush"] = "Strike:Metal",
+	["Razor Blitz"] = "Strike:Blood",
+	["Wind Passage"] = "Strike:Wind",
+	["Burning Servants"] = "Squad:Fire",
+	["Frozen Servants"] = "Squad:Ice",
+	["Glacial Arc"] = "Arc:Ice",
+	["Astral Wind"] = "Astral:Wind",
+	["Ceaseless Slashes"] = "Astral:WeaponLight",
+	["Rising Flame"] = "RisingSlash:Fire",
+	["Rising Shadow"] = "RisingSlash:Shadow",
+	["Rising Thunder"] = "RisingSlash:Lightning",
+	["Rising Frost"] = "RisingSlash:Ice",
+	["Rising Wind"] = "RisingSlash:Wind",
+	["Exhaustion Strike"] = "Exhaustion:Willpower",
+	["Flame Repulsion"] = "Repulsion:Fire",
+	["Fire Gun"] = "Gun:Fire",
+	["Wind Gun"] = "Gun:Wind",
+	["Shadow Gun"] = "Gun:Shadow",
+	["Firing Line"] = "Gun:Metal",
+	["Lightning Cloak"] = "Cloak:Lightning",
+	["Flame Grab"] = "Choke:Fire",
+	["Clutching Shadow"] = "Choke:Shadow",
+	["Jolt Grab"] = "Choke:Lightning",
+	["Iron Hug"] = "Choke:Metal",
+	["Soulflare Siphon"] = "Choke:Blood",
+	["Frost Grab"] = "Choke:Ice",
+	["Dread Whisper"] = "Choke:Charisma",
+	["Metal Turret"] = "Turret:Metal",
+	["Galetrap"] = "Trap:Wind",
+	["Caltrops"] = "Trap:Metal",
+	["Searing Snare"] = "Trap:Fire",
+	["Ice Eruption"] = "Eruption:Ice",
+	["Tornado"] = "Eruption:Wind",
+	["Shadow Eruption"] = "Eruption:Shadow",
+	["Fire Eruption"] = "Eruption:Fire",
+	["Lightning Strike"] = "Eruption:Lightning",
+	["Metal Eruption"] = "Eruption:Metal",
+	["Scarlet Cyclone"] = "Eruption:Blood",
+	["Ice Beam"] = "Beam:Ice",
+	["Lightning Beam"] = "Beam:Lightning",
+	["Flare Volley"] = "Beam:Fire",
+	["Scarlet Cannon"] = "Beam:Blood",
+	["Air Force"] = "Blast:Wind",
+	["Flame of Denial"] = "Clutch:Fire",
+	["Vein Tendrils"] = "Clutch:Blood",
+	["Summon Cauldron"] = "Cauldron:Intelligence",
+	["Shade Bringer"] = "Bringer:Shadow",
+	["Onslaught"] = "Bringer:WeaponHeavy",
+	["Fire Blade"] = "Blade:Fire",
+	["Wind Blade"] = "Blade:Wind",
+	["Dark Blade"] = "Blade:Shadow",
+	["Ice Blade"] = "Blade:Ice",
+	["Lightning Blade"] = "Blade:Lightning",
+	["Metal Armament"] = "Blade:Metal",
+	["Bloodedge"] = "Blade:Blood",
+	["Blood Wisp"] = "Wisp:Blood",
+	["Flame Wisp"] = "Wisp:Fire",
+	["Frost Wisp"] = "Wisp:Ice",
+	["Thunder Wisp"] = "Wisp:Lightning",
+	["Metal Wisp"] = "Wisp:Metal",
+	["Shade Wisp"] = "Wisp:Shadow",
+	["Gale Wisp"] = "Wisp:Wind",
+	["Shadow Roar"] = "Roar:Shadow",
+	["Graceful Flame"] = "Graceful:Fire",
+	["Umbral Slash"] = "Slash:Shadow",
+}
+
+---Correct known builder data name mismatches.
+correctBuilderName = function(name)
+	return builderNameCorrections[name] or name
 end
 
 ---Update talent sheet.
@@ -694,7 +903,7 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 			continue
 		end
 
-		local cleanMantra = stripTags(mantra)
+		local cleanMantra = correctBuilderName(stripTags(mantra))
 
 		local idx = Table.find(players.LocalPlayer.Backpack:GetChildren(), function(value, _)
 			local displayName = value:GetAttribute("DisplayName")
@@ -1016,6 +1225,98 @@ local updateTrain = LPH_NO_VIRTUALIZE(function(jframe)
 	end
 end)
 
+---Apply auto favour to build cards and unfavour non-build cards.
+local function applyAutoFavour()
+	local bdata = Visuals.bdata
+	if not bdata then
+		return
+	end
+
+	local drinfo = Visuals.drinfo
+	if not drinfo then
+		return
+	end
+
+	local requests = replicatedStorage:FindFirstChild("Requests")
+	if not requests then
+		return
+	end
+
+	local cards = requests:FindFirstChild("Cards")
+	if not cards then
+		return
+	end
+
+	local favourCard = cards:FindFirstChild("FavourCard")
+	if not favourCard then
+		return
+	end
+
+	local removeFavourRemote = cards:FindFirstChild("RemoveFavour")
+	if not removeFavourRemote then
+		return
+	end
+
+	-- Collect card names (internal format) and build a set for lookup.
+	local names = {}
+	local buildSet = {}
+
+	for _, talent in next, bdata.talents do
+		local name = correctBuilderName(stripTags(talent))
+		table.insert(names, name)
+		buildSet[name] = true
+	end
+
+	for _, mantra in next, bdata.mantras do
+		local displayName = correctBuilderName(stripTags(mantra))
+		local internalName = mantraDisplayToInternal[displayName] or displayName
+		table.insert(names, internalName)
+		buildSet[internalName] = true
+	end
+
+	-- Check current favour state to skip already-favoured cards.
+	local cardsFavoured = drinfo.CardsFavoured
+	local cardsForetold = drinfo.CardsForetold
+
+	local favourNames = {}
+	for _, name in next, names do
+		if not (cardsFavoured and cardsFavoured[name]) then
+			table.insert(favourNames, name)
+		end
+	end
+
+	-- Collect non-build favoured cards to unfavour (skip foretold).
+	local unfavourNames = {}
+
+	if cardsFavoured then
+		for cardName, _ in next, cardsFavoured do
+			if not buildSet[cardName] and not (cardsForetold and cardsForetold[cardName]) then
+				table.insert(unfavourNames, cardName)
+			end
+		end
+	end
+
+	lastFavouredNames = names
+	autoFavourApplied = true
+	autoFavourBdata = bdata
+
+	TaskSpawner.spawn("Visuals_AutoFavourCards", function()
+		-- Favour build cards that aren't already favoured.
+		for _, name in next, favourNames do
+			pcall(favourCard.InvokeServer, favourCard, name)
+			task.wait(0.1)
+		end
+
+		-- Unfavour non-build cards.
+		for _, name in next, unfavourNames do
+			pcall(removeFavourRemote.InvokeServer, removeFavourRemote, name)
+			task.wait(0.1)
+		end
+
+		Logger.notify("Favoured %d cards, unfavoured %d non-build cards.", #favourNames, #unfavourNames)
+	end)
+end
+
 ---Update build assistance.
 local updateBuildAssistance = LPH_NO_VIRTUALIZE(function()
 	updateCardFrames()
@@ -1042,6 +1343,12 @@ local updateBuildAssistance = LPH_NO_VIRTUALIZE(function()
 	updatePowerBackground(bpJournalFrame)
 	updateTalentSheet(rightFrame)
 	updateTrain(bpJournalFrame)
+
+	-- Auto favour cards.
+	local shouldFavour = Configuration.expectToggleValue("AutoFavourCards") and Visuals.bdata
+	if shouldFavour and (not autoFavourApplied or Visuals.bdata ~= autoFavourBdata) then
+		applyAutoFavour()
+	end
 end)
 
 ---Update no persistence.
@@ -1736,6 +2043,9 @@ function Visuals.detach()
 	end
 
 	mysteryRevealMap:restore()
+	autoFavourApplied = false
+	autoFavourBdata = nil
+	lastFavouredNames = {}
 	dismissRoll2()
 	roll2Notified = false
 	cachedRoll2Selection = nil

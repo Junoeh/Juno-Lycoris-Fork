@@ -337,12 +337,16 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, options)
 	end
 
 	local actionType = options.action and options.action._type or "N/A"
+	local isCrouchOrSlide = actionType == "Start Crouch"
+		or actionType == "End Crouch"
+		or actionType == "Start Slide"
+		or actionType == "End Slide"
 
 	if
 		not Configuration.expectToggleValue("BlatantRoll")
 		or (actionType ~= PP_SCRAMBLE_STR("Dodge") and actionType ~= PP_SCRAMBLE_STR("Forced Full Dodge"))
 	then
-		if not self.afeinted and not options.sstun and StateListener.astun() then
+		if not self.afeinted and not options.sstun and not isCrouchOrSlide and StateListener.astun() then
 			return internalNotifyFunction(timing, "User is in action stun.")
 		end
 
@@ -352,7 +356,8 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, options)
 	end
 
 	if actionType == PP_SCRAMBLE_STR("Parry") then
-		if effectReplicatorModule:FindEffect("AutoParry") and Configuration.expectToggleValue("UseAutoParryFrames") then
+		local isPlayer = self.entity and players:GetPlayerFromCharacter(self.entity)
+		if effectReplicatorModule:FindEffect("AutoParry") and isPlayer and Configuration.expectToggleValue("UseAutoParryFrames") then
 			return internalNotifyFunction(timing, "User has auto parry frames.")
 		end
 	end
@@ -764,29 +769,19 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, started)
 	end
 
 	if actionType == "Start Slide" then
-		local serverSlide = KeyHandling.getRemote("ServerSlide")
-		if not serverSlide then
-			return
-		end
-
-		return serverSlide:FireServer(true)
+		return InputClient.slide()
 	end
 
 	if actionType == "End Slide" then
-		local serverSlideStop = KeyHandling.getRemote("ServerSlideStop")
-		if not serverSlideStop then
-			return
-		end
-
-		return serverSlideStop:FireServer(false)
+		return InputClient.unslide()
 	end
 
 	if actionType == "Start Crouch" then
-		return InputClient.crouch(true)
+		return InputClient.crouch()
 	end
 
 	if actionType == "End Crouch" then
-		return InputClient.crouch(false)
+		return InputClient.uncrouch()
 	end
 
 	if actionType == "Jump" then
@@ -989,6 +984,15 @@ Defender.clean = LPH_NO_VIRTUALIZE(function(self)
 	-- Clean-up tasks.
 	for idx, task in next, self.tasks do
 		if task.forced then
+			continue
+		end
+
+		if
+			task.identifier == "Start Crouch"
+			or task.identifier == "End Crouch"
+			or task.identifier == "Start Slide"
+			or task.identifier == "End Slide"
+		then
 			continue
 		end
 

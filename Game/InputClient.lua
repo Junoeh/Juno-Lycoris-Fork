@@ -26,12 +26,33 @@ local unreliableFireServer = Instance.new("UnreliableRemoteEvent").FireServer
 -- Cache.
 local inputDataCache = nil
 
+---Get EffectReplicator module.
+---@return table?
+local getEffectModule = LPH_NO_VIRTUALIZE(function()
+	local effectReplicator = replicatedStorage:FindFirstChild("EffectReplicator")
+	if not effectReplicator then
+		return nil
+	end
+
+	return require(effectReplicator)
+end)
+
 -- Tracks.
 local freefallTrack = nil
 local slideJumpTrack = nil
 local cancelLeftTrack = nil
 local cancelRightTrack = nil
 local jumpAnimTrack = nil
+local crouchTrack = nil
+local groundslideTrack = nil
+
+-- Slide state.
+local slideBodyVelocity = nil
+local slideActive = false
+
+-- Crouch state.
+local crouchActive = false
+local crouchSession = 0
 
 ---Check if we landed.
 ---@return boolean
@@ -557,34 +578,248 @@ InputClient.amantra = LPH_NO_VIRTUALIZE(function(tool)
 end)
 
 ---Crouch function.
----@param state boolean
-InputClient.crouch = LPH_NO_VIRTUALIZE(function(state)
+InputClient.crouch = LPH_NO_VIRTUALIZE(function()
 	local character = players.LocalPlayer.Character
 	if not character then
-		return Logger.warn("Cannot crouch without character.")
-	end
-
-	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-	if not humanoidRootPart then
-		return Logger.warn("Cannot crouch without humanoid root part.")
+		return
 	end
 
 	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return Logger.warn("Cannot crouch without character handler.")
-	end
-
-	local requests = characterHandler:FindFirstChild("Requests")
+	local requests = characterHandler and characterHandler:FindFirstChild("Requests")
 	if not requests then
-		return Logger.warn("Cannot crouch without requests.")
+		return
 	end
 
 	local crouchRemote = requests:FindFirstChild("ServerCrouch")
 	if not crouchRemote then
-		return Logger.warn("Cannot crouch without crouch remote.")
+		return
 	end
 
-	crouchRemote:FireServer(state)
+	local effectReplicatorModule = getEffectModule()
+	if not effectReplicatorModule then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if crouchTrack then
+		crouchTrack:Play()
+	end
+
+	crouchRemote:FireServer(true)
+	effectReplicatorModule:CreateEffect("ClientCrouch")
+
+	crouchActive = true
+	crouchSession = crouchSession + 1
+	local session = crouchSession
+
+	task.spawn(function()
+		while crouchActive and crouchSession == session and crouchTrack do
+			if humanoid and humanoid.MoveDirection.Magnitude < 0.1 then
+				crouchTrack:AdjustSpeed(0)
+			elseif humanoid then
+				crouchTrack:AdjustSpeed(humanoid.WalkSpeed / 15.5)
+			end
+
+			task.wait()
+		end
+	end)
+end)
+
+---Uncrouch function.
+InputClient.uncrouch = LPH_NO_VIRTUALIZE(function()
+	local character = players.LocalPlayer.Character
+	if not character then
+		return
+	end
+
+	local characterHandler = character:FindFirstChild("CharacterHandler")
+	local requests = characterHandler and characterHandler:FindFirstChild("Requests")
+	if not requests then
+		return
+	end
+
+	local crouchRemote = requests:FindFirstChild("ServerCrouch")
+	if not crouchRemote then
+		return
+	end
+
+	local effectReplicatorModule = getEffectModule()
+	if not effectReplicatorModule then
+		return
+	end
+
+	crouchActive = false
+	crouchRemote:FireServer(false)
+
+	if crouchTrack then
+		crouchTrack:Stop()
+	end
+
+	effectReplicatorModule:RemoveEffectsOfClass("ClientCrouch")
+end)
+
+---Slide function.
+InputClient.slide = LPH_NO_VIRTUALIZE(function()
+	local character = players.LocalPlayer.Character
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	local serverSlide = KeyHandling.getRemote("ServerSlide")
+	if not serverSlide then
+		return
+	end
+
+	local effectReplicatorModule = getEffectModule()
+	if not effectReplicatorModule then
+		return
+	end
+
+	local characterHashes = replicatedStorage:FindFirstChild("CharacterHashes")
+	local characterHashesModule = characterHashes and require(characterHashes)
+	local hashData = characterHashesModule and characterHashesModule.GetDynamic(character)
+
+	local healthPercent = humanoid.Health / humanoid.MaxHealth
+	if hashData and hashData["Endurance Runner"] then
+		healthPercent = 0.25 + healthPercent * 0.75
+	end
+
+	local agility = character:FindFirstChild("PassiveAgility")
+	local agilityValue = agility and agility.Value or 0
+	local isDanger = effectReplicatorModule:HasEffect("DangerPvP")
+	local speed = 20 + agilityValue * (isDanger and 0.4 or 0.5) * healthPercent
+
+	if effectReplicatorModule:HasEffect("ClientDodge") then
+		speed = speed + (isDanger and 3 or 10)
+	end
+
+	if hashData then
+		local kongaRing = hashData["Konga's Clutch Ring"]
+		local slick = hashData.Slick
+
+		if kongaRing then
+			speed = speed + (isDanger and 5 or 15)
+		end
+
+		if slick then
+			speed = speed + (isDanger and 0 or 15)
+		end
+
+		if not kongaRing and not slick and effectReplicatorModule:FindEffect("BigMomentum") then
+			speed = speed + 15
+		end
+	end
+
+	if effectReplicatorModule:HasEffect("AirBorne") then
+		speed = speed + 15
+	end
+
+	if effectReplicatorModule:HasEffect("SpeedSlide") then
+		speed = speed + 10
+	elseif effectReplicatorModule:HasEffect("WardingRadiance") then
+		speed = speed + (isDanger and 7.5 or 15)
+	end
+
+	local slideEffect = effectReplicatorModule:CreateEffect("ClientSlide2")
+	slideEffect:Debris(60)
+
+	if groundslideTrack then
+		groundslideTrack:Play()
+	end
+
+	serverSlide:FireServer(true)
+
+	local rootCollider = character:FindFirstChild("RootCollider")
+	local colliderWeld = rootCollider and rootCollider:FindFirstChild("ColliderWeld")
+	if colliderWeld then
+		colliderWeld.C0 = CFrame.new(0, -1.9, 0)
+	end
+
+	local velocity = root.CFrame.LookVector * speed
+	root.AssemblyLinearVelocity = velocity
+
+	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity:AddTag("LocalMover")
+	bodyVelocity.Name = "SlideVel"
+	bodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
+	bodyVelocity.Velocity = velocity
+	bodyVelocity:AddTag("AllowedBM")
+	bodyVelocity.Parent = root
+
+	slideBodyVelocity = bodyVelocity
+	slideActive = true
+
+	task.spawn(function()
+		while slideActive and bodyVelocity.Parent do
+			task.wait(0.03)
+
+			local isIce = humanoid.FloorMaterial == Enum.Material.Ice
+				and not (
+					hashData
+					and (
+						hashData["Steady Footing"]
+						or effectReplicatorModule:HasEffect("WardingRadiance")
+					)
+				)
+
+			speed = speed - (isIce and 0.25 or 1)
+			if speed <= 0 then
+				break
+			end
+
+			bodyVelocity.Velocity = root.CFrame.LookVector * speed
+		end
+	end)
+
+	task.delay(3, function()
+		if slideActive then
+			InputClient.unslide()
+		end
+	end)
+end)
+
+---Unslide function.
+InputClient.unslide = LPH_NO_VIRTUALIZE(function()
+	slideActive = false
+
+	local serverSlideStop = KeyHandling.getRemote("ServerSlideStop")
+	if serverSlideStop then
+		serverSlideStop:FireServer()
+	end
+
+	if slideBodyVelocity and slideBodyVelocity.Parent then
+		slideBodyVelocity:Destroy()
+		slideBodyVelocity = nil
+	end
+
+	local character = players.LocalPlayer.Character
+	if character then
+		local rootCollider = character:FindFirstChild("RootCollider")
+		local colliderWeld = rootCollider and rootCollider:FindFirstChild("ColliderWeld")
+		if colliderWeld then
+			colliderWeld.C0 = CFrame.new()
+		end
+	end
+
+	if groundslideTrack then
+		groundslideTrack:Stop()
+	end
+
+	local effectReplicatorModule = getEffectModule()
+	if effectReplicatorModule then
+		effectReplicatorModule:RemoveEffectsOfClass("ClientSlide2")
+	end
 end)
 
 ---Vent function.
@@ -1825,6 +2060,8 @@ InputClient.cache = LPH_NO_VIRTUALIZE(function()
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local slideJumpAnim = inputClient and inputClient:FindFirstChild("SlideJump")
 	local jumpAnim = inputClient and inputClient:FindFirstChild("Jump")
+	local crouchAnim = movement and movement:FindFirstChild("Crouch")
+	local groundslideAnim = movement and movement:FindFirstChild("Groundslide")
 
 	if not slideJumpAnim or not jumpAnim or not humanoid or not cancelLeft or not cancelRight or not freefallAnim then
 		return false
@@ -1836,8 +2073,39 @@ InputClient.cache = LPH_NO_VIRTUALIZE(function()
 	cancelRightTrack = humanoid:LoadAnimation(cancelRight)
 	jumpAnimTrack = humanoid:LoadAnimation(jumpAnim)
 
+	if crouchAnim then
+		crouchTrack = humanoid:LoadAnimation(crouchAnim)
+	end
+
+	if groundslideAnim then
+		groundslideTrack = humanoid:LoadAnimation(groundslideAnim)
+	end
+
 	-- Return whether we were successful.
 	return InputClient.sprintFunctionCache ~= nil and InputClient.rollFunctionCache ~= nil and inputDataCache ~= nil
+end)
+
+-- Reset character-dependent state on respawn.
+players.LocalPlayer.CharacterAdded:Connect(function()
+	InputClient.sprintFunctionCache = nil
+	InputClient.rollFunctionCache = nil
+	inputDataCache = nil
+
+	freefallTrack = nil
+	slideJumpTrack = nil
+	cancelLeftTrack = nil
+	cancelRightTrack = nil
+	jumpAnimTrack = nil
+	crouchTrack = nil
+	groundslideTrack = nil
+
+	if slideBodyVelocity and slideBodyVelocity.Parent then
+		slideBodyVelocity:Destroy()
+	end
+
+	slideBodyVelocity = nil
+	slideActive = false
+	crouchActive = false
 end)
 
 -- Return InputClient module.

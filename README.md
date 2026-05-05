@@ -1,5 +1,7 @@
 <p align="center">
-  <img src=".github/assets/lycoris.png" alt="Lycoris" width="100%">
+  <a href="https://discord.gg/4wWJRJxXaS">
+    <img src=".github/assets/lycoris.png" alt="Lycoris" width="100%">
+  </a>
 </p>
 
 # Lycoris-Rewrite

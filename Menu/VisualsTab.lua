@@ -179,6 +179,18 @@ function VisualsTab.initVisualAssistanceSection(groupbox)
 		Default = false,
 	})
 
+	groupbox:AddToggle("MysteryMantraRevealer", {
+		Text = "Mystery Mantra Revealer",
+		Tooltip = "Reveals the identity of mystery mantra cards in the talent choice screen.",
+		Default = false,
+	})
+
+	groupbox:AddToggle("Roll2Revealer", {
+		Text = "Roll 2 Revealer",
+		Tooltip = "Shows the available talents in a Roll 2 card via notifications.",
+		Default = false,
+	})
+
 	local buildAssistanceToggle = groupbox:AddToggle("BuildAssistance", {
 		Text = "Build Assistance",
 		Tooltip = "Visual assistance for selecting talents, progressing a build, and more.",
@@ -204,6 +216,12 @@ function VisualsTab.initVisualAssistanceSection(groupbox)
 
 	sdoDepBox:SetupDependencies({
 		{ sdoToggle, true },
+	})
+
+	buildAssistanceDepBox:AddToggle("AutoFavourCards", {
+		Text = "Auto Favour Cards",
+		Tooltip = "Automatically favour cards in the build when builder assistance is active. Unfavours them when disabled.",
+		Default = false,
 	})
 
 	buildAssistanceDepBox:AddInput("BuildAssistanceLink", {

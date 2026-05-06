@@ -94,11 +94,30 @@ local groups = {}
 -- Original stores.
 local fieldOfView = nil
 
+-- Auto favour state.
+local autoFavourApplied = false
+local autoFavourBdata = nil
+local lastFavouredNames = {}
+
+-- Mystery reveal state.
+local roll2Notified = false
+local roll2Dismissals = {}
+local cachedRoll2Selection = nil
+
+---Dismiss all Roll 2 notifications.
+local function dismissRoll2()
+	for _, dismiss in next, roll2Dismissals do
+		task.spawn(dismiss)
+	end
+	roll2Dismissals = {}
+end
+
 -- Original store managers.
 local showRobloxChatMap = visualsMaid:mark(OriginalStoreManager.new())
 local noAnimatedSeaMap = visualsMaid:mark(OriginalStoreManager.new())
 local noPersistentMap = visualsMaid:mark(OriginalStoreManager.new())
 local buildAssistanceMap = visualsMaid:mark(OriginalStoreManager.new())
+local mysteryRevealMap = visualsMaid:mark(OriginalStoreManager.new())
 local jobBoardMap = visualsMaid:mark(OriginalStoreManager.new())
 
 ---Update chain of perfection tracker.
@@ -265,6 +284,9 @@ local onPlayerGuiDescendantAdded = LPH_NO_VIRTUALIZE(function(descendant)
 	end
 
 	cardFrames[descendant] = true
+	roll2Notified = false
+	cachedRoll2Selection = nil
+	dismissRoll2()
 end)
 
 ---On Player GUI descendant removed.
@@ -275,10 +297,42 @@ local onPlayerGuiDescendantRemoving = LPH_NO_VIRTUALIZE(function(descendant)
 	end
 
 	cardFrames[descendant] = nil
+	dismissRoll2()
+	roll2Notified = false
 end)
+
+local stripTags = nil
+local correctBuilderName = nil
+local mantraDisplayToInternal = nil
 
 ---Update card frames.
 local updateCardFrames = LPH_NO_VIRTUALIZE(function()
+	local drinfo = Visuals.drinfo
+	if not drinfo then
+		return
+	end
+
+	---@type BuilderData
+	local bdata = Visuals.bdata
+	if not bdata then
+		return
+	end
+
+	-- Pre-build lookup sets from builder data for O(1) matching.
+	local talentLookup = {}
+	for _, talent in next, bdata.talents do
+		local talentClean = stripTags(talent)
+		talentLookup[talentClean] = talent
+		talentLookup[talent] = talent
+	end
+
+	local mantraLookup = {}
+	for _, mantra in next, bdata.mantras do
+		local mantraClean = correctBuilderName(stripTags(mantra))
+		mantraLookup[mantraClean] = mantra
+		mantraLookup[mantra] = mantra
+	end
+
 	for frame in next, cardFrames do
 		local title = frame:FindFirstChild("Title")
 		if not title then
@@ -290,26 +344,17 @@ local updateCardFrames = LPH_NO_VIRTUALIZE(function()
 			continue
 		end
 
-		local drinfo = Visuals.drinfo
-		if not drinfo then
-			continue
-		end
-
-		---@type BuilderData
-		local bdata = Visuals.bdata
-		if not bdata then
-			continue
-		end
-
 		local trimmedName = string.gsub(title.Text, "^%s*(.-)%s*$", "%1")
-		local cardInData = table.find(bdata.talents, trimmedName) or table.find(bdata.mantras, trimmedName)
+		local fullTalentName = talentLookup[trimmedName] or mantraLookup[trimmedName]
+		local cardInData = fullTalentName ~= nil
 
 		buildAssistanceMap:add(border, "ImageColor3", cardInData and Color3.new(0, 255, 0) or Color3.new(255, 0, 0))
 
 		if
 			cardInData
-			and bdata.ddata:possible(trimmedName, bdata.pre)
-			and not bdata.ddata:possible(trimmedName, bdata.post)
+			and fullTalentName
+			and bdata.ddata:possible(fullTalentName, bdata.pre)
+			and not bdata.ddata:possible(fullTalentName, bdata.post)
 		then
 			buildAssistanceMap:add(border, "ImageColor3", Color3.new(255, 0, 255))
 		end
@@ -535,13 +580,198 @@ local updateTraits = LPH_NO_VIRTUALIZE(function(jframe)
 end)
 
 ---Strip weapon tags like [HVY], [LHT], [MED], [FTD], [BLD] for display.
-local function stripTags(str)
+stripTags = function(str)
 	return str:gsub("%s*%[.-%]$", "")
+end
+
+-- Builder name corrections (builder data name -> in-game name).
+local builderNameCorrections = {
+	["Shadow Meteors"] = "Shadow Meteor",
+}
+
+-- Mantra display name -> internal name mapping.
+mantraDisplayToInternal = {
+	["Tornado Kick"] = "HeavyKick:Wind",
+	["Ice Forge"] = "Forge:Ice",
+	["Fire Forge"] = "Forge:Fire",
+	["Storm Blades"] = "Forge:Lightning",
+	["Wind Forge"] = "Forge:Wind",
+	["Iron Tether"] = "Forge:Metal",
+	["Blood Orb"] = "Forge:Blood",
+	["Flaming Scourge"] = "Whip:Fire",
+	["Ice Cubes"] = "Push:Ice",
+	["Bloodtide Ritual"] = "Judgement:Blood",
+	["Relentless Flames"] = "RapidArms:Fire",
+	["Reinforce"] = "Reinforce:Fortitude",
+	["Iceberg"] = "Reinforce:Ice",
+	["Iron Skin"] = "Reinforce:Metal",
+	["Shade Devour"] = "Devour:Shadow",
+	["Devouring Eye"] = "SilenceField:Shadow",
+	["Warden's Blades"] = "Dice:Ice",
+	["Taunt"] = "Taunt:Charisma",
+	["Glare"] = "Glare:Willpower",
+	["Sing"] = "Sing:Charisma",
+	["Strong Left"] = "StrongPunch:Strength",
+	["Ash Slam"] = "StrongPunch:Fire",
+	["Master's Flourish"] = "StrongPunch:WeaponMedium",
+	["Pressure Blast"] = "StrongPunch:WeaponHeavy",
+	["Eclipse Kick"] = "StrongPunch:Shadow",
+	["Rocket Lance"] = "StrongPunch:Metal",
+	["Veinbreaker"] = "StrongPunch:Blood",
+	["Adrenaline Surge"] = "Adrenaline:Agility",
+	["Dash"] = "Dash:Agility",
+	["Metal Fakeout"] = "Dash:Metal",
+	["Rapid Slashes"] = "Dash:WeaponLight",
+	["Slice 'n' Dice"] = "Dash:WeaponMedium",
+	["Revenge"] = "Revenge:Agility",
+	["Punishment"] = "Revenge:WeaponHeavy",
+	["Twincleave"] = "Revenge:WeaponMedium",
+	["Permafrost Prison"] = "Zone:Shadow",
+	["Ether Barrage"] = "Barrage:Intelligence",
+	["Metal Gatling"] = "Barrage:Metal",
+	["Rapid Punches"] = "Barrage:Strength",
+	["Encircle"] = "Encircle:Shadow",
+	["Shadow Vortex"] = "Attract:Shadow",
+	["Emotion Wave"] = "Wave:Lightning",
+	["Champion's Whirlthrow"] = "Toss:Wind",
+	["Grand Javelin"] = "Toss:Lightning",
+	["Needle Barrage"] = "Toss:Metal",
+	["Flame Ballista"] = "Toss:Fire",
+	["Ice Flock"] = "Toss:Ice",
+	["Table Flip"] = "Toss:Strength",
+	["Sanguine Dive"] = "Toss:Blood",
+	["Thunder Kick"] = "Kick:Lightning",
+	["Metal Kick"] = "Kick:Metal",
+	["Flashfire Sweep"] = "Kick:Fire",
+	["Twister Kicks"] = "Kick:Wind",
+	["Crucifixion"] = "Conjure:Blood",
+	["Bolt Piercer"] = "SkyArrow:Lightning",
+	["Metal Rain"] = "SkyArrow:Metal",
+	["Flame Sentinel"] = "SkyArrow:Fire",
+	["Ice Skate"] = "Skate:Ice",
+	["Gaze"] = "Gaze:Willpower",
+	["Ice Fissure"] = "Fissure:Ice",
+	["Ice Smash"] = "Smash:Ice",
+	["Iron Slam"] = "Smash:Metal",
+	["Shadow Meteor"] = "Palm:Shadow",
+	["Gale Punch"] = "Palm:Wind",
+	["Fire Palm"] = "Palm:Fire",
+	["Lightning Impact"] = "Palm:Lightning",
+	["Iron Quills"] = "Palm:Metal",
+	["Flame Blind"] = "Blind:Fire",
+	["Ice Spikes"] = "Pillar:Ice",
+	["Metal Rampart"] = "Pillar:Metal",
+	["Flame Leap"] = "Leap:Fire",
+	["Strong Leap"] = "Leap:Strength",
+	["Neural Pathway"] = "Leap:Intelligence",
+	["Spark Swap"] = "Swap:Lightning",
+	["Crimson Surge"] = "UpSmash:Blood",
+	["Flashdraw Strike"] = "UpSmash:WeaponMedium",
+	["Shade Step"] = "UpSmash:Shadow",
+	["Updraft"] = "UpSmash:Wind",
+	["Ice Chain"] = "Restraint:Ice",
+	["Shadow Chains"] = "Restraint:Shadow",
+	["Bloodcurdle"] = "Restraint:Blood",
+	["Wind Carve"] = "Carve:Wind",
+	["Electro Carve"] = "Carve:Lightning",
+	["Ice Carve"] = "Carve:Ice",
+	["Ice Daggers"] = "Dagger:Ice",
+	["Shadow Seekers"] = "Dagger:Shadow",
+	["Fleeting Sparks"] = "Dagger:Lightning",
+	["Crimson Rain"] = "Dagger:Blood",
+	["Vicious Descent"] = "DownAir:Blood",
+	["Tempest Blitz"] = "DownAir:Lightning",
+	["Prediction"] = "Prediction:Intelligence",
+	["Heavenly Wind"] = "HeavenlyStrike:Wind",
+	["Gale Lunge"] = "Pierce:Wind",
+	["Metal Ball"] = "Pierce:Metal",
+	["Ice Lance"] = "Pierce:Ice",
+	["Blood Stakes"] = "Pierce:Blood",
+	["Lightning Stream"] = "Stream:Lightning",
+	["Chain Pull"] = "Stream:Metal",
+	["Lightning Clones"] = "Clones:Lightning",
+	["Shadow Assault"] = "Strike:Shadow",
+	["Flame Assault"] = "Strike:Fire",
+	["Shoulder Bash"] = "Strike:Fortitude",
+	["Prominence Draw"] = "Strike:WeaponMedium",
+	["Lightning Assault"] = "Strike:Lightning",
+	["Oxidizing Rush"] = "Strike:Metal",
+	["Razor Blitz"] = "Strike:Blood",
+	["Wind Passage"] = "Strike:Wind",
+	["Burning Servants"] = "Squad:Fire",
+	["Frozen Servants"] = "Squad:Ice",
+	["Glacial Arc"] = "Arc:Ice",
+	["Astral Wind"] = "Astral:Wind",
+	["Ceaseless Slashes"] = "Astral:WeaponLight",
+	["Rising Flame"] = "RisingSlash:Fire",
+	["Rising Shadow"] = "RisingSlash:Shadow",
+	["Rising Thunder"] = "RisingSlash:Lightning",
+	["Rising Frost"] = "RisingSlash:Ice",
+	["Rising Wind"] = "RisingSlash:Wind",
+	["Exhaustion Strike"] = "Exhaustion:Willpower",
+	["Flame Repulsion"] = "Repulsion:Fire",
+	["Fire Gun"] = "Gun:Fire",
+	["Wind Gun"] = "Gun:Wind",
+	["Shadow Gun"] = "Gun:Shadow",
+	["Firing Line"] = "Gun:Metal",
+	["Lightning Cloak"] = "Cloak:Lightning",
+	["Flame Grab"] = "Choke:Fire",
+	["Clutching Shadow"] = "Choke:Shadow",
+	["Jolt Grab"] = "Choke:Lightning",
+	["Iron Hug"] = "Choke:Metal",
+	["Soulflare Siphon"] = "Choke:Blood",
+	["Frost Grab"] = "Choke:Ice",
+	["Dread Whisper"] = "Choke:Charisma",
+	["Metal Turret"] = "Turret:Metal",
+	["Galetrap"] = "Trap:Wind",
+	["Caltrops"] = "Trap:Metal",
+	["Searing Snare"] = "Trap:Fire",
+	["Ice Eruption"] = "Eruption:Ice",
+	["Tornado"] = "Eruption:Wind",
+	["Shadow Eruption"] = "Eruption:Shadow",
+	["Fire Eruption"] = "Eruption:Fire",
+	["Lightning Strike"] = "Eruption:Lightning",
+	["Metal Eruption"] = "Eruption:Metal",
+	["Scarlet Cyclone"] = "Eruption:Blood",
+	["Ice Beam"] = "Beam:Ice",
+	["Lightning Beam"] = "Beam:Lightning",
+	["Flare Volley"] = "Beam:Fire",
+	["Scarlet Cannon"] = "Beam:Blood",
+	["Air Force"] = "Blast:Wind",
+	["Flame of Denial"] = "Clutch:Fire",
+	["Vein Tendrils"] = "Clutch:Blood",
+	["Summon Cauldron"] = "Cauldron:Intelligence",
+	["Shade Bringer"] = "Bringer:Shadow",
+	["Onslaught"] = "Bringer:WeaponHeavy",
+	["Fire Blade"] = "Blade:Fire",
+	["Wind Blade"] = "Blade:Wind",
+	["Dark Blade"] = "Blade:Shadow",
+	["Ice Blade"] = "Blade:Ice",
+	["Lightning Blade"] = "Blade:Lightning",
+	["Metal Armament"] = "Blade:Metal",
+	["Bloodedge"] = "Blade:Blood",
+	["Blood Wisp"] = "Wisp:Blood",
+	["Flame Wisp"] = "Wisp:Fire",
+	["Frost Wisp"] = "Wisp:Ice",
+	["Thunder Wisp"] = "Wisp:Lightning",
+	["Metal Wisp"] = "Wisp:Metal",
+	["Shade Wisp"] = "Wisp:Shadow",
+	["Gale Wisp"] = "Wisp:Wind",
+	["Shadow Roar"] = "Roar:Shadow",
+	["Graceful Flame"] = "Graceful:Fire",
+	["Umbral Slash"] = "Slash:Shadow",
+}
+
+---Correct known builder data name mismatches.
+correctBuilderName = function(name)
+	return builderNameCorrections[name] or name
 end
 
 ---Update talent sheet.
 ---@param rframe Frame
 local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
+	task.wait()
+
 	local talentSheet = rframe:FindFirstChild("TalentSheet")
 	local container = talentSheet and talentSheet:FindFirstChild("Container")
 	local talentScroll = container and container:FindFirstChild("TalentScroll")
@@ -560,31 +790,30 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 		return
 	end
 
-	local divider = talentScroll:FindFirstChild("8ZQuestDivider")
-	if not divider then
-		return
-	end
-
-	-- Find a frame template with title child (new ui structure).
+	-- Find a talent Frame template and category group template.
 	local talentFrameTemplate = nil
-	for _, child in next, talentScroll:GetChildren() do
-		if child:IsA("Frame") and not child.Name:match("Divider$") and child:FindFirstChild("Title") then
-			talentFrameTemplate = child
-			break
+	local categoryGroupTemplate = nil
+	for _, category in next, talentScroll:GetChildren() do
+		if category:IsA("Frame") and category:FindFirstChild("Title") then
+			if not categoryGroupTemplate then
+				categoryGroupTemplate = category
+			end
+
+			for _, talent in next, category:GetChildren() do
+				if talent:IsA("Frame") and talent:FindFirstChild("Title") then
+					talentFrameTemplate = talent
+					break
+				end
+			end
+
+			if talentFrameTemplate then
+				break
+			end
 		end
 	end
 
-	if not talentFrameTemplate then
+	if not talentFrameTemplate or not categoryGroupTemplate then
 		return
-	end
-
-	-- Disable UIVanity script while modifying GUI.
-	local playerGui = players.LocalPlayer:FindFirstChild("PlayerGui")
-	local uiVanity = playerGui and playerGui:FindFirstChild("UIVanity")
-	local wasEnabled = uiVanity and uiVanity.Enabled
-
-	if uiVanity then
-		uiVanity.Enabled = false
 	end
 
 	-- Clean maid to re-setup.
@@ -596,21 +825,26 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 	-- First step: color everything inside and remove everything that is in the builder list already.
 	local filteredTalents = table.clone(bdata.talents)
 
+	-- Pre-build name to index lookup from talents for O(1) matching.
+	local talentNameToIdx = {}
+	for idx, talent in next, filteredTalents do
+		local talentClean = stripTags(talent)
+		talentNameToIdx[talentClean] = idx
+		talentNameToIdx[talent] = idx
+	end
+
+	-- Iterate through Title TextLabels inside category sub-frames.
 	for _, instance in next, talentScroll:GetDescendants() do
 		if not instance:IsA("TextLabel") then
 			continue
 		end
 
+		-- Only process Title labels.
 		if instance.Name ~= "Title" then
 			continue
 		end
 
-		local instanceText = instance.Text
-
-		local idx = Table.find(filteredTalents, function(value, _)
-			local valueClean = stripTags(value)
-			return instanceText == valueClean or instanceText == value
-		end)
+		local idx = talentNameToIdx[instance.Text]
 
 		if not idx then
 			continue
@@ -618,23 +852,42 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 
 		buildAssistanceMap:add(instance, "TextColor3", Color3.fromRGB(9, 255, 0))
 
+		-- Remove from lookup to prevent duplicate matches.
+		local talent = filteredTalents[idx]
+		talentNameToIdx[stripTags(talent)] = nil
+		talentNameToIdx[talent] = nil
 		filteredTalents[idx] = nil
 	end
 
-	-- Pre second step: create a nice looking separator.
-	local tseparator = InstanceWrapper.mark(builderAssistanceMaid, "tdivider", divider:Clone())
-	tseparator.Name = "LMissingTalentDivider"
-	tseparator.LayoutOrder = 9990
-	tseparator.Parent = talentScroll
+	-- Second step: create a missing talents group and add unmatched talents.
+	local missingTalentGroup = InstanceWrapper.mark(builderAssistanceMaid, "missingTalentGroup", categoryGroupTemplate:Clone())
+	for _, child in next, missingTalentGroup:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
 
-	-- Second step: add every filtered talent as red (or purple if pre-shrine).
-	local talentOrder = 9991
+	missingTalentGroup.Name = "LMissingTalents"
+	missingTalentGroup.LayoutOrder = 9990
+
+	local missingTalentTitle = missingTalentGroup:FindFirstChild("Title")
+	if missingTalentTitle then
+		missingTalentTitle.Text = "MISSING"
+		missingTalentTitle.TextColor3 = Color3.fromRGB(255, 0, 2)
+	end
+
+	local hasMissingTalents = false
+	local talentOrder = 1
 	for _, talent in next, filteredTalents do
+		-- Use full talent name (WITH tag) for ddata lookup since API stores with tags.
 		local data = bdata.ddata:get(talent)
 		if not data then
 			continue
 		end
 
+		hasMissingTalents = true
+
+		-- Strip tags for display (game shows without tags).
 		local cleanTalent = stripTags(talent)
 
 		local newFrame = InstanceWrapper.mark(builderAssistanceMaid, talent, talentFrameTemplate:Clone())
@@ -648,6 +901,7 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 			icon:Destroy()
 		end
 
+		-- Update Title text and color - display WITHOUT tag.
 		local title = newFrame:FindFirstChild("Title")
 		if title then
 			title.Name = "M" .. cleanTalent
@@ -656,26 +910,43 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 			title.TextTransparency = 0.4
 		end
 
-		newFrame.Parent = talentScroll
+		newFrame.Parent = missingTalentGroup
 
 		labelMap["M" .. cleanTalent] = data
 	end
 
-	-- Pre third step: create a nice looking separator.
-	local mseparator = InstanceWrapper.mark(builderAssistanceMaid, "mdivider", divider:Clone())
-	mseparator.Name = "XMissingMantraDivider"
-	mseparator.LayoutOrder = 9995
-	mseparator.Parent = talentScroll
+	if hasMissingTalents then
+		missingTalentGroup.Parent = talentScroll
+	end
 
-	-- Third step: add every mantra as red (or purple if pre-shrine).
-	local mantraOrder = 9996
+	-- Third step: create a missing mantras group and add unmatched mantras.
+	local missingMantraGroup = InstanceWrapper.mark(builderAssistanceMaid, "missingMantraGroup", categoryGroupTemplate:Clone())
+	for _, child in next, missingMantraGroup:GetChildren() do
+		if child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	missingMantraGroup.Name = "XMissingMantras"
+	missingMantraGroup.LayoutOrder = 9995
+
+	local missingMantraTitle = missingMantraGroup:FindFirstChild("Title")
+	if missingMantraTitle then
+		missingMantraTitle.Text = "MISSING MANTRAS"
+		missingMantraTitle.TextColor3 = Color3.fromRGB(255, 0, 2)
+	end
+
+	local hasMissingMantras = false
+	local mantraOrder = 1
 	for _, mantra in next, bdata.mantras do
+		-- Use full mantra name (WITH tag) for ddata lookup.
 		local data = bdata.ddata:get(mantra)
 		if not data then
 			continue
 		end
 
-		local cleanMantra = stripTags(mantra)
+		-- Strip tags and correct builder name mismatches for display.
+		local cleanMantra = correctBuilderName(stripTags(mantra))
 
 		local idx = Table.find(players.LocalPlayer.Backpack:GetChildren(), function(value, _)
 			local displayName = value:GetAttribute("DisplayName")
@@ -685,6 +956,8 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 			local cleanDisplayName = stripTags(displayName)
 			return cleanDisplayName == cleanMantra or displayName == cleanMantra
 		end)
+
+		hasMissingMantras = true
 
 		local newFrame = InstanceWrapper.mark(builderAssistanceMaid, mantra, talentFrameTemplate:Clone())
 		local pshlocked = (bdata.ddata:possible(mantra, bdata.pre) and not bdata.ddata:possible(mantra, bdata.post))
@@ -709,14 +982,13 @@ local updateTalentSheet = LPH_NO_VIRTUALIZE(function(rframe)
 			end
 		end
 
-		newFrame.Parent = talentScroll
+		newFrame.Parent = missingMantraGroup
 
 		labelMap["Z" .. cleanMantra] = data
 	end
 
-	-- Re-enable UIVanity script.
-	if uiVanity and wasEnabled then
-		uiVanity.Enabled = true
+	if hasMissingMantras then
+		missingMantraGroup.Parent = talentScroll
 	end
 end)
 
@@ -997,6 +1269,98 @@ local updateTrain = LPH_NO_VIRTUALIZE(function(jframe)
 	end
 end)
 
+---Apply auto favour to build cards and unfavour non-build cards.
+local function applyAutoFavour()
+	local bdata = Visuals.bdata
+	if not bdata then
+		return
+	end
+
+	local drinfo = Visuals.drinfo
+	if not drinfo then
+		return
+	end
+
+	local requests = replicatedStorage:FindFirstChild("Requests")
+	if not requests then
+		return
+	end
+
+	local cards = requests:FindFirstChild("Cards")
+	if not cards then
+		return
+	end
+
+	local favourCard = cards:FindFirstChild("FavourCard")
+	if not favourCard then
+		return
+	end
+
+	local removeFavourRemote = cards:FindFirstChild("RemoveFavour")
+	if not removeFavourRemote then
+		return
+	end
+
+	-- Collect card names (internal format) and build a set for lookup.
+	local names = {}
+	local buildSet = {}
+
+	for _, talent in next, bdata.talents do
+		local name = correctBuilderName(stripTags(talent))
+		table.insert(names, name)
+		buildSet[name] = true
+	end
+
+	for _, mantra in next, bdata.mantras do
+		local displayName = correctBuilderName(stripTags(mantra))
+		local internalName = mantraDisplayToInternal[displayName] or displayName
+		table.insert(names, internalName)
+		buildSet[internalName] = true
+	end
+
+	-- Check current favour state to skip already-favoured cards.
+	local cardsFavoured = drinfo.CardsFavoured
+	local cardsForetold = drinfo.CardsForetold
+
+	local favourNames = {}
+	for _, name in next, names do
+		if not (cardsFavoured and cardsFavoured[name]) then
+			table.insert(favourNames, name)
+		end
+	end
+
+	-- Collect non-build favoured cards to unfavour (skip foretold).
+	local unfavourNames = {}
+
+	if cardsFavoured then
+		for cardName, _ in next, cardsFavoured do
+			if not buildSet[cardName] and not (cardsForetold and cardsForetold[cardName]) then
+				table.insert(unfavourNames, cardName)
+			end
+		end
+	end
+
+	lastFavouredNames = names
+	autoFavourApplied = true
+	autoFavourBdata = bdata
+
+	TaskSpawner.spawn("Visuals_AutoFavourCards", function()
+		-- Favour build cards that aren't already favoured.
+		for _, name in next, favourNames do
+			pcall(favourCard.InvokeServer, favourCard, name)
+			task.wait(0.1)
+		end
+
+		-- Unfavour non-build cards.
+		for _, name in next, unfavourNames do
+			pcall(removeFavourRemote.InvokeServer, removeFavourRemote, name)
+			task.wait(0.1)
+		end
+
+		Logger.notify("Favoured %d cards, unfavoured %d non-build cards.", #favourNames, #unfavourNames)
+	end)
+end
+
 ---Update build assistance.
 local updateBuildAssistance = LPH_NO_VIRTUALIZE(function()
 	updateCardFrames()
@@ -1023,6 +1387,12 @@ local updateBuildAssistance = LPH_NO_VIRTUALIZE(function()
 	updatePowerBackground(bpJournalFrame)
 	updateTalentSheet(rightFrame)
 	updateTrain(bpJournalFrame)
+
+	-- Auto favour cards.
+	local shouldFavour = Configuration.expectToggleValue("AutoFavourCards") and Visuals.bdata
+	if shouldFavour and (not autoFavourApplied or Visuals.bdata ~= autoFavourBdata) then
+		applyAutoFavour()
+	end
 end)
 
 ---Update no persistence.
@@ -1124,6 +1494,119 @@ local updateTerrainAttachments = LPH_NO_VIRTUALIZE(function()
 	end
 end)
 
+---Update mystery mantra reveal.
+local updateMysteryReveal = LPH_NO_VIRTUALIZE(function()
+	local drinfo = Visuals.drinfo
+	if not drinfo or not drinfo.AvailableMantras then
+		return
+	end
+
+	-- Build mantra data lookup from AvailableMantras.
+	local mantraDataLookup = {}
+	for _, mantra in next, drinfo.AvailableMantras do
+		if mantra.Name then
+			mantraDataLookup[mantra.Name] = mantra
+		end
+	end
+
+	for frame in next, cardFrames do
+		local parent = frame.Parent
+		if not parent then
+			continue
+		end
+
+		-- Only process ChoiceFrame cards.
+		local choiceFrame = parent.Parent
+		if not choiceFrame or choiceFrame.Name ~= "ChoiceFrame" then
+			continue
+		end
+
+		-- Check if this card is a mystery card by its class text.
+		local details = frame:FindFirstChild("Details")
+		if not details then
+			continue
+		end
+
+		local class = details:FindFirstChild("Class")
+		if not class or class.Text ~= "Mystery" then
+			continue
+		end
+
+		-- Look up the real mantra data by the card's internal name.
+		local realData = mantraDataLookup[parent.Name]
+		if not realData then
+			continue
+		end
+
+		local title = frame:FindFirstChild("Title")
+		if title and realData.MantraName then
+			mysteryRevealMap:add(title, "Text", realData.MantraName)
+		end
+
+		if realData.Class then
+			mysteryRevealMap:add(class, "Text", realData.Class)
+		end
+
+		local desc = details:FindFirstChild("Desc")
+		if desc and realData.Desc then
+			mysteryRevealMap:add(desc, "Text", realData.Desc)
+		end
+	end
+end)
+
+---Update Roll 2 reveal.
+local updateRoll2Reveal = LPH_NO_VIRTUALIZE(function()
+	-- Cache Roll 2 selection from TalentChoice when available.
+	local drinfo = Visuals.drinfo
+	if drinfo then
+		local talentChoice = drinfo.TalentChoice
+		if talentChoice and talentChoice.Selection then
+			for _, entry in next, talentChoice.Selection do
+				if entry.Type == "Roll2" and entry.Selection then
+					cachedRoll2Selection = entry.Selection
+					break
+				end
+			end
+		end
+	end
+
+	if roll2Notified or not cachedRoll2Selection then
+		return
+	end
+
+	-- Verify the Roll 2 card is actually visible in ChoiceFrame.
+	local found = false
+	for frame in next, cardFrames do
+		local parent = frame.Parent
+		if parent and parent.Name == "Roll 2" then
+			local choiceFrame = parent.Parent
+			if choiceFrame and choiceFrame.Name == "ChoiceFrame" then
+				found = true
+				break
+			end
+		end
+	end
+
+	if not found then
+		return
+	end
+
+	roll2Notified = true
+
+	local dismiss = Logger.mnnotify("Available Roll 2 Talents:")
+	if dismiss then
+		table.insert(roll2Dismissals, dismiss)
+	end
+
+	for _, talent in next, cachedRoll2Selection do
+		local talentDismiss =
+			Logger.mnnotify("  %s (%s) - %s", talent.Name or "Unknown", talent.Class or "Unknown", talent.Desc or "")
+		if talentDismiss then
+			table.insert(roll2Dismissals, talentDismiss)
+		end
+	end
+end)
+
 ---Update ESP.
 local updateESP = LPH_NO_VIRTUALIZE(function()
 	if os.clock() - lastESPUpdate <= (1 / (Configuration.expectOptionValue("ESPRefreshRate") or 30)) then
@@ -1150,6 +1633,19 @@ local updateVisuals = LPH_NO_VIRTUALIZE(function()
 	end
 
 	lastVisualsUpdate = os.clock()
+
+	if Configuration.expectToggleValue("MysteryMantraRevealer") then
+		updateMysteryReveal()
+	else
+		mysteryRevealMap:restore()
+	end
+
+	if Configuration.expectToggleValue("Roll2Revealer") then
+		updateRoll2Reveal()
+	else
+		dismissRoll2()
+		roll2Notified = false
+	end
 
 	if Configuration.idToggleValue("JobBoard", "Enable") then
 		updateTerrainAttachments()
@@ -1574,12 +2070,65 @@ function Visuals.init()
 	local dataReplication = info:WaitForChild("DataReplication")
 	local dataReplicationModule = require(dataReplication)
 
-	-- GetData() can fail on hot reload.
+	-- GetData() can fail on hot reload after remotes have been called because
+	-- The game's internal DataReplication state changes (require cache corruption).
+	-- Strategy: Try GetData() first, fall back to reading directly from character attributes.
 	local success, drinfo = pcall(function()
 		return dataReplicationModule.GetData()
 	end)
 
-	Visuals.drinfo = success and drinfo or nil
+	if success and type(drinfo) == "table" then
+		Visuals.drinfo = drinfo
+	else
+		-- GetData() failed - read data directly from character attributes (always fresh).
+		Logger.warn("GetData() failed, reading stats directly from character...")
+
+		local character = localPlayer and localPlayer.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+		if humanoid then
+			local fallbackData = {}
+			local statNames = {
+				"Agility",
+				"Strength",
+				"Fortitude",
+				"Intelligence",
+				"Willpower",
+				"Charisma",
+				"ElementBlood",
+				"ElementFire",
+				"ElementIce",
+				"ElementLightning",
+				"ElementWind",
+				"ElementShadow",
+				"ElementMetal",
+				"WeaponHeavy",
+				"WeaponMedium",
+				"WeaponLight",
+			}
+
+			for _, statName in ipairs(statNames) do
+				local key = "Stat" .. statName
+				fallbackData[key] = humanoid:GetAttribute(key) or character:GetAttribute(key) or 0
+			end
+
+			-- Read trait attributes.
+			fallbackData["TraitHealth"] = humanoid:GetAttribute("TraitHealth") or character:GetAttribute("TraitHealth") or 0
+			fallbackData["TraitEther"] = humanoid:GetAttribute("TraitEther") or character:GetAttribute("TraitEther") or 0
+			fallbackData["TraitWeaponDamage"] = humanoid:GetAttribute("TraitWeaponDamage")
+				or character:GetAttribute("TraitWeaponDamage")
+				or 0
+			fallbackData["TraitMantraDamage"] = humanoid:GetAttribute("TraitMantraDamage")
+				or character:GetAttribute("TraitMantraDamage")
+				or 0
+
+			Visuals.drinfo = fallbackData
+			Logger.warn("Successfully read stats from character attributes (fallback mode).")
+		else
+			Visuals.drinfo = nil
+			Logger.warn("Could not read character attributes - BuildAssistance disabled.")
+		end
+	end
 
 	Logger.warn("Visuals initialized.")
 end
@@ -1589,6 +2138,14 @@ function Visuals.detach()
 	for _, group in next, groups do
 		group:detach()
 	end
+
+	mysteryRevealMap:restore()
+	autoFavourApplied = false
+	autoFavourBdata = nil
+	lastFavouredNames = {}
+	dismissRoll2()
+	roll2Notified = false
+	cachedRoll2Selection = nil
 
 	visualsMaid:clean()
 	builderAssistanceMaid:clean()
